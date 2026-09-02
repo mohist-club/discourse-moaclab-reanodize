@@ -52,9 +52,10 @@ The admin page supports:
 - Search by request id, kit name, QQ, or payment order number
 - Status updates
 - Admin note updates
+- Clickable image previews when the submitted file value is a Discourse upload URL
 
 ## Notes
 
-The first backend version stores uploaded file names from the theme component. A later version can replace this with Discourse Upload records for case images and payment screenshots.
+The backend stores file references sent by the theme component. Current theme versions upload images through Discourse first and submit the returned upload URLs, so the admin page can render thumbnails and clickable image links. Older records that only contain local file names are still shown as text.
 
 For larger-scale operation, migrate the `PluginStore` records to a dedicated database table after the production install has been verified.

@@ -3,7 +3,7 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.2
+# version: 0.1.3
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
@@ -279,32 +279,120 @@ after_initialize do
         end.join
       end
 
+      def image_file?(value)
+        value.to_s.match?(/\.(avif|gif|jpe?g|png|webp)(\?.*)?\z/i)
+      end
+
+      def upload_url(value)
+        raw = value.to_s.strip
+        return "" if raw.blank?
+        return raw if raw.start_with?("http://", "https://", "/uploads/", "/optimized/")
+
+        if raw.start_with?("upload://")
+          upload = Upload.get_from_url(raw) rescue nil
+          return upload.url if upload&.url.present?
+        end
+
+        ""
+      end
+
+      def file_items_html(files, empty_label)
+        items = Array.wrap(files).map { |file| file.to_s.strip }.reject(&:blank?)
+        return %(<span class="muted">#{h(empty_label)}</span>) if items.blank?
+
+        items.map do |file|
+          url = upload_url(file)
+          label = File.basename(file)
+
+          if url.present? && image_file?(url)
+            %(<a class="file-thumb" href="#{h(url)}" target="_blank" rel="noopener"><img src="#{h(url)}" alt="#{h(label)}"><span>#{h(label)}</span></a>)
+          elsif url.present?
+            %(<a class="file-link" href="#{h(url)}" target="_blank" rel="noopener">#{h(label)}</a>)
+          else
+            %(<span class="file-name">#{h(label)}</span>)
+          end
+        end.join
+      end
+
       def admin_request_rows
         requests = admin_requests
-        return %(<tr><td class="empty" colspan="9">暂无提交记录</td></tr>) if requests.blank?
+        return %(<div class="empty">暂无提交记录</div>) if requests.blank?
 
         requests.map do |item|
           created_at = Time.zone.parse(item["created_at"].to_s).strftime("%Y-%m-%d %H:%M") rescue item["created_at"]
-          payment_files = Array.wrap(item["payment_files"]).join(", ")
           service = "#{SCOPE_LABELS[item["anodize_scope"]]}#{item["needs_strip_polish"] ? " / 退漆打磨" : ""}"
+          payment_files = file_items_html(item["payment_files"], "未上传付款截图")
+          case_files = file_items_html(item["case_files"], "未上传案例图")
 
-          <<~ROW
-            <tr>
-              <td><strong class="mono">#{h(item["public_id"])}</strong><br><span class="muted">#{h(created_at)}</span></td>
-              <td>#{h(item["username"] || "-")}</td>
-              <td><strong>#{h(item["kit_name"])}</strong><br><span class="muted">#{h(item["color_code"])}</span></td>
-              <td>#{h(service)}<br><strong>#{h(item["estimated_total"])}</strong></td>
-              <td>#{h(item["receiver_name"])} #{h(item["receiver_phone"])}<br><span class="muted">#{h(item["tracking_number"])}</span><br>#{h(item["shipping_address"])}</td>
-              <td>#{h(item["payment_order_no"])}<br><span class="muted">#{h(payment_files)}</span></td>
-              <td>
-                <form method="post" action="/moaclab/reanodize/admin/requests/#{h(item["id"])}">
-                  <input type="hidden" name="authenticity_token" value="#{h(form_authenticity_token)}">
-                  <select name="status">#{admin_status_options(item["status"])}</select>
-              </td>
-              <td><textarea name="admin_note">#{h(item["admin_note"])}</textarea></td>
-              <td><button type="submit">保存</button><br><span class="status">#{h(STATUS_LABELS[item["status"]])}</span></form></td>
-            </tr>
-          ROW
+          <<~HTML
+            <article class="request-card">
+              <form method="post" action="/moaclab/reanodize/admin/requests/#{h(item["id"])}">
+                <input type="hidden" name="authenticity_token" value="#{h(form_authenticity_token)}">
+                <div class="request-head">
+                  <div class="request-id">
+                    <span>编号</span>
+                    <strong class="mono">#{h(item["public_id"])}</strong>
+                    <em>#{h(created_at)}</em>
+                  </div>
+                  <div>
+                    <span>用户</span>
+                    <strong>#{h(item["username"] || "-")}</strong>
+                  </div>
+                  <div>
+                    <span>套件 / 颜色</span>
+                    <strong>#{h(item["kit_name"])}</strong>
+                    <em>#{h(item["color_code"])}</em>
+                  </div>
+                  <div>
+                    <span>服务 / 费用</span>
+                    <strong>#{h(service)}</strong>
+                    <em>#{h(item["estimated_total"])} 元</em>
+                  </div>
+                </div>
+                <div class="request-body">
+                  <section class="info-block">
+                    <h2>联系与寄件</h2>
+                    <dl>
+                      <dt>联系人</dt><dd>#{h(item["receiver_name"])}</dd>
+                      <dt>手机号</dt><dd>#{h(item["receiver_phone"])}</dd>
+                      <dt>QQ</dt><dd>#{h(item["qq"])}</dd>
+                      <dt>快递单号</dt><dd>#{h(item["tracking_number"])}</dd>
+                      <dt>收货地址</dt><dd>#{h(item["shipping_address"])}</dd>
+                    </dl>
+                  </section>
+                  <section class="info-block">
+                    <h2>付款与图片</h2>
+                    <dl>
+                      <dt>支付宝订单号</dt><dd>#{h(item["payment_order_no"])}</dd>
+                    </dl>
+                    <div class="file-area">
+                      <h3>已付截图</h3>
+                      <div class="file-grid">#{payment_files}</div>
+                    </div>
+                    <div class="file-area">
+                      <h3>图片案例</h3>
+                      <div class="file-grid">#{case_files}</div>
+                    </div>
+                  </section>
+                  <section class="info-block admin-block">
+                    <h2>处理</h2>
+                    <label>
+                      <span>状态</span>
+                      <select name="status">#{admin_status_options(item["status"])}</select>
+                    </label>
+                    <label>
+                      <span>内部备注</span>
+                      <textarea name="admin_note">#{h(item["admin_note"])}</textarea>
+                    </label>
+                    <div class="admin-actions">
+                      <button type="submit">保存</button>
+                      <span class="status">#{h(STATUS_LABELS[item["status"]])}</span>
+                    </div>
+                  </section>
+                </div>
+              </form>
+            </article>
+          HTML
         end.join
       end
 
@@ -324,24 +412,50 @@ after_initialize do
               <meta name="viewport" content="width=device-width, initial-scale=1">
               <title>重新阳极需求管理</title>
               <style>
+                *{box-sizing:border-box}
                 body{margin:0;background:#f6f8fb;color:#17202a;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
                 main{max-width:1180px;margin:0 auto;padding:28px}
                 header{display:flex;justify-content:space-between;gap:16px;align-items:end;margin-bottom:18px}
-                h1{margin:0;font-size:28px}
+                h1{margin:0;font-size:30px;line-height:1.2;letter-spacing:0}
+                h2,h3{margin:0;line-height:1.25;letter-spacing:0}
                 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}
-                .stat,.panel{background:#fff;border:1px solid #dfe7f1;border-radius:12px;box-shadow:0 12px 30px rgba(31,45,71,.06)}
-                .stat{padding:16px}.stat span{display:block;color:#6c87a8;font-weight:700}.stat strong{font-size:28px}
-                .toolbar{display:flex;gap:10px;margin-bottom:14px}
-                input,select,textarea,button{border:1px solid #cbd8e8;border-radius:8px;background:#fff;color:#17202a;font:inherit}
-                input,select{height:40px;padding:0 12px}button{height:40px;padding:0 14px;font-weight:700;cursor:pointer}
-                table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden}
-                th,td{padding:12px;border-bottom:1px solid #e4ebf3;text-align:left;vertical-align:top}
-                th{color:#6c87a8;font-size:13px}
+                .stat{background:#fff;border:1px solid #dfe7f1;border-radius:14px;box-shadow:0 14px 34px rgba(31,45,71,.06);padding:18px}
+                .stat span{display:block;color:#6c87a8;font-weight:750}.stat strong{font-size:30px;line-height:1.1}
+                .toolbar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+                input,select,textarea,button{border:1px solid #cbd8e8;border-radius:10px;background:#fff;color:#17202a;font:inherit}
+                input,select{height:42px;padding:0 12px}button{height:42px;padding:0 16px;font-weight:800;cursor:pointer}
                 .muted{color:#6c87a8}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-                .status{display:inline-flex;margin-top:8px;padding:3px 9px;border-radius:999px;background:#edf4ff;color:#386fae;font-weight:800;font-size:12px}
-                .empty{padding:28px;text-align:center;color:#6c87a8;font-weight:800}
-                textarea{width:220px;min-height:42px;padding:8px 10px;resize:vertical}
-                @media(max-width:760px){main{padding:16px}.stats{grid-template-columns:repeat(2,1fr)}header,.toolbar{display:grid}table,thead,tbody,tr,th,td{display:block}thead{display:none}tr{border-bottom:1px solid #dfe7f1}td{border-bottom:0}}
+                .request-list{display:grid;gap:16px}
+                .request-card{background:#fff;border:1px solid #dfe7f1;border-radius:16px;box-shadow:0 16px 40px rgba(31,45,71,.07);overflow:hidden}
+                .request-head{display:grid;grid-template-columns:1.35fr .8fr 1.3fr 1fr;gap:0;border-bottom:1px solid #e4ebf3;background:linear-gradient(180deg,#fff,#fbfdff)}
+                .request-head>div{min-width:0;padding:16px 18px;border-right:1px solid #e4ebf3}
+                .request-head>div:last-child{border-right:0}
+                .request-head span,.info-block label>span{display:block;color:#6c87a8;font-size:13px;font-weight:800;margin-bottom:6px}
+                .request-head strong{display:block;font-size:17px;line-height:1.35;overflow-wrap:anywhere}
+                .request-head em{display:block;color:#6c87a8;font-style:normal;margin-top:3px;overflow-wrap:anywhere}
+                .request-body{display:grid;grid-template-columns:1.1fr 1.1fr .85fr;gap:14px;padding:16px}
+                .info-block{min-width:0;border:1px solid #e4ebf3;border-radius:14px;padding:16px;background:#fff}
+                .info-block h2{font-size:16px;margin-bottom:12px}
+                dl{display:grid;grid-template-columns:82px minmax(0,1fr);gap:8px 12px;margin:0}
+                dt{color:#6c87a8;font-weight:800}
+                dd{margin:0;font-weight:650;overflow-wrap:anywhere}
+                .file-area{margin-top:14px}
+                .file-area h3{color:#6c87a8;font-size:13px;margin-bottom:8px}
+                .file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:10px}
+                .file-thumb,.file-link,.file-name{display:flex;align-items:center;justify-content:center;min-height:42px;border:1px solid #dfe7f1;border-radius:12px;background:#f8fbff;color:#386fae;font-weight:800;text-decoration:none;overflow:hidden}
+                .file-thumb{display:grid;grid-template-rows:74px auto;padding:6px;gap:6px}
+                .file-thumb img{width:100%;height:74px;object-fit:cover;border-radius:9px;background:#eef3f8}
+                .file-thumb span,.file-name,.file-link{font-size:12px;line-height:1.25;text-align:center;overflow-wrap:anywhere}
+                .admin-block{display:grid;gap:12px;align-content:start}
+                .admin-block label{display:grid;gap:6px}
+                .admin-block select{width:100%}
+                textarea{width:100%;min-height:112px;padding:10px 12px;resize:vertical}
+                .admin-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+                .admin-actions button{background:#17202a;color:#fff;border-color:#17202a}
+                .status{display:inline-flex;padding:5px 11px;border-radius:999px;background:#edf4ff;color:#386fae;font-weight:800;font-size:13px}
+                .empty{padding:32px;text-align:center;color:#6c87a8;font-weight:800;background:#fff;border:1px solid #dfe7f1;border-radius:14px}
+                @media(max-width:900px){main{padding:18px}.stats{grid-template-columns:repeat(2,1fr)}.request-head,.request-body{grid-template-columns:1fr}.request-head>div{border-right:0;border-bottom:1px solid #e4ebf3}.request-head>div:last-child{border-bottom:0}.toolbar input{width:100%}}
+                @media(max-width:560px){main{padding:14px}h1{font-size:25px}.stats{grid-template-columns:1fr}.stat{padding:14px}.toolbar{display:grid}.toolbar>*{width:100%}.request-body{padding:12px}.info-block{padding:14px}dl{grid-template-columns:1fr;gap:4px}.file-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
               </style>
             </head>
             <body>
@@ -361,11 +475,8 @@ after_initialize do
                   </select>
                   <button type="submit">筛选</button>
                 </form>
-                <section class="panel">
-                  <table>
-                    <thead><tr><th>编号</th><th>用户</th><th>套件</th><th>服务</th><th>联系/寄件</th><th>付款</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
-                    <tbody>#{admin_request_rows}</tbody>
-                  </table>
+                <section class="request-list">
+                  #{admin_request_rows}
                 </section>
               </main>
             </body>
