@@ -3,7 +3,7 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.3
+# version: 0.1.4
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
@@ -293,10 +293,13 @@ after_initialize do
           return upload.url if upload&.url.present?
         end
 
+        upload = Upload.where(original_filename: raw).order(id: :desc).first rescue nil
+        return upload.url if upload&.url.present?
+
         ""
       end
 
-      def file_items_html(files, empty_label)
+      def file_items_html(files, empty_label, compact: false)
         items = Array.wrap(files).map { |file| file.to_s.strip }.reject(&:blank?)
         return %(<span class="muted">#{h(empty_label)}</span>) if items.blank?
 
@@ -305,7 +308,8 @@ after_initialize do
           label = File.basename(file)
 
           if url.present? && image_file?(url)
-            %(<a class="file-thumb" href="#{h(url)}" target="_blank" rel="noopener"><img src="#{h(url)}" alt="#{h(label)}"><span>#{h(label)}</span></a>)
+            label_html = compact ? "" : %(<span>#{h(label)}</span>)
+            %(<a class="file-thumb#{compact ? " is-compact" : ""}" href="#{h(url)}" target="_blank" rel="noopener" title="#{h(label)}"><img src="#{h(url)}" alt="#{h(label)}">#{label_html}</a>)
           elsif url.present?
             %(<a class="file-link" href="#{h(url)}" target="_blank" rel="noopener">#{h(label)}</a>)
           else
@@ -321,34 +325,28 @@ after_initialize do
         requests.map do |item|
           created_at = Time.zone.parse(item["created_at"].to_s).strftime("%Y-%m-%d %H:%M") rescue item["created_at"]
           service = "#{SCOPE_LABELS[item["anodize_scope"]]}#{item["needs_strip_polish"] ? " / 退漆打磨" : ""}"
+          row_files = file_items_html(item["payment_files"], "无", compact: true)
           payment_files = file_items_html(item["payment_files"], "未上传付款截图")
           case_files = file_items_html(item["case_files"], "未上传案例图")
 
           <<~HTML
-            <article class="request-card">
-              <form method="post" action="/moaclab/reanodize/admin/requests/#{h(item["id"])}">
+            <details class="request-item">
+              <summary class="request-row">
+                <span class="cell request-id">
+                  <em>编号</em>
+                  <strong class="mono">#{h(item["public_id"])}</strong>
+                  <small>#{h(created_at)}</small>
+                </span>
+                <span class="cell"><em>用户</em><strong>#{h(item["username"] || "-")}</strong></span>
+                <span class="cell"><em>套件</em><strong>#{h(item["kit_name"])}</strong><small>#{h(item["color_code"])}</small></span>
+                <span class="cell"><em>服务</em><strong>#{h(service)}</strong><small>#{h(item["estimated_total"])} 元</small></span>
+                <span class="cell"><em>联系</em><strong>#{h(item["receiver_name"])} / #{h(item["receiver_phone"])}</strong><small>QQ #{h(item["qq"])}</small></span>
+                <span class="cell file-cell"><em>付款截图</em><span class="row-files">#{row_files}</span></span>
+                <span class="cell"><em>状态</em><span class="status">#{h(STATUS_LABELS[item["status"]])}</span></span>
+                <span class="row-action">详情</span>
+              </summary>
+              <form class="request-detail" method="post" action="/moaclab/reanodize/admin/requests/#{h(item["id"])}">
                 <input type="hidden" name="authenticity_token" value="#{h(form_authenticity_token)}">
-                <div class="request-head">
-                  <div class="request-id">
-                    <span>编号</span>
-                    <strong class="mono">#{h(item["public_id"])}</strong>
-                    <em>#{h(created_at)}</em>
-                  </div>
-                  <div>
-                    <span>用户</span>
-                    <strong>#{h(item["username"] || "-")}</strong>
-                  </div>
-                  <div>
-                    <span>套件 / 颜色</span>
-                    <strong>#{h(item["kit_name"])}</strong>
-                    <em>#{h(item["color_code"])}</em>
-                  </div>
-                  <div>
-                    <span>服务 / 费用</span>
-                    <strong>#{h(service)}</strong>
-                    <em>#{h(item["estimated_total"])} 元</em>
-                  </div>
-                </div>
                 <div class="request-body">
                   <section class="info-block">
                     <h2>联系与寄件</h2>
@@ -391,7 +389,7 @@ after_initialize do
                   </section>
                 </div>
               </form>
-            </article>
+            </details>
           HTML
         end.join
       end
@@ -425,15 +423,22 @@ after_initialize do
                 input,select,textarea,button{border:1px solid #cbd8e8;border-radius:10px;background:#fff;color:#17202a;font:inherit}
                 input,select{height:42px;padding:0 12px}button{height:42px;padding:0 16px;font-weight:800;cursor:pointer}
                 .muted{color:#6c87a8}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-                .request-list{display:grid;gap:16px}
-                .request-card{background:#fff;border:1px solid #dfe7f1;border-radius:16px;box-shadow:0 16px 40px rgba(31,45,71,.07);overflow:hidden}
-                .request-head{display:grid;grid-template-columns:1.35fr .8fr 1.3fr 1fr;gap:0;border-bottom:1px solid #e4ebf3;background:linear-gradient(180deg,#fff,#fbfdff)}
-                .request-head>div{min-width:0;padding:16px 18px;border-right:1px solid #e4ebf3}
-                .request-head>div:last-child{border-right:0}
-                .request-head span,.info-block label>span{display:block;color:#6c87a8;font-size:13px;font-weight:800;margin-bottom:6px}
-                .request-head strong{display:block;font-size:17px;line-height:1.35;overflow-wrap:anywhere}
-                .request-head em{display:block;color:#6c87a8;font-style:normal;margin-top:3px;overflow-wrap:anywhere}
-                .request-body{display:grid;grid-template-columns:1.1fr 1.1fr .85fr;gap:14px;padding:16px}
+                .request-list{display:grid;gap:10px}
+                .request-list-head,.request-row{display:grid;grid-template-columns:1.45fr .75fr 1fr 1fr 1.15fr .9fr .7fr 68px;gap:12px;align-items:center}
+                .request-list-head{padding:0 18px 8px;color:#6c87a8;font-size:12px;font-weight:850}
+                .request-item{background:#fff;border:1px solid #dfe7f1;border-radius:14px;box-shadow:0 14px 34px rgba(31,45,71,.06);overflow:hidden}
+                .request-item[open]{box-shadow:0 18px 44px rgba(31,45,71,.1)}
+                .request-row{position:relative;min-height:84px;padding:14px 18px;list-style:none;cursor:pointer}
+                .request-row::-webkit-details-marker{display:none}
+                .request-row:hover{background:#fbfdff}
+                .request-row .cell{min-width:0;display:grid;gap:3px}
+                .request-row em{display:none;color:#6c87a8;font-size:12px;font-style:normal;font-weight:850}
+                .request-row strong{display:block;font-size:14px;line-height:1.35;overflow-wrap:anywhere}
+                .request-row small{display:block;color:#6c87a8;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+                .row-action{justify-self:end;display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 12px;border:1px solid #cbd8e8;border-radius:999px;color:#386fae;font-size:13px;font-weight:850}
+                .request-item[open] .row-action{background:#edf4ff}
+                .row-files{display:flex;gap:6px;align-items:center;min-width:0}
+                .request-body{display:grid;grid-template-columns:1.05fr 1.05fr .9fr;gap:14px;padding:16px;border-top:1px solid #e4ebf3;background:#fbfdff}
                 .info-block{min-width:0;border:1px solid #e4ebf3;border-radius:14px;padding:16px;background:#fff}
                 .info-block h2{font-size:16px;margin-bottom:12px}
                 dl{display:grid;grid-template-columns:82px minmax(0,1fr);gap:8px 12px;margin:0}
@@ -445,17 +450,20 @@ after_initialize do
                 .file-thumb,.file-link,.file-name{display:flex;align-items:center;justify-content:center;min-height:42px;border:1px solid #dfe7f1;border-radius:12px;background:#f8fbff;color:#386fae;font-weight:800;text-decoration:none;overflow:hidden}
                 .file-thumb{display:grid;grid-template-rows:74px auto;padding:6px;gap:6px}
                 .file-thumb img{width:100%;height:74px;object-fit:cover;border-radius:9px;background:#eef3f8}
+                .file-thumb.is-compact{width:46px;height:46px;min-height:0;padding:3px;grid-template-rows:1fr;border-radius:10px}
+                .file-thumb.is-compact img{height:38px;border-radius:7px}
                 .file-thumb span,.file-name,.file-link{font-size:12px;line-height:1.25;text-align:center;overflow-wrap:anywhere}
                 .admin-block{display:grid;gap:12px;align-content:start}
                 .admin-block label{display:grid;gap:6px}
+                .info-block label>span{display:block;color:#6c87a8;font-size:13px;font-weight:800;margin-bottom:6px}
                 .admin-block select{width:100%}
                 textarea{width:100%;min-height:112px;padding:10px 12px;resize:vertical}
                 .admin-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
                 .admin-actions button{background:#17202a;color:#fff;border-color:#17202a}
                 .status{display:inline-flex;padding:5px 11px;border-radius:999px;background:#edf4ff;color:#386fae;font-weight:800;font-size:13px}
                 .empty{padding:32px;text-align:center;color:#6c87a8;font-weight:800;background:#fff;border:1px solid #dfe7f1;border-radius:14px}
-                @media(max-width:900px){main{padding:18px}.stats{grid-template-columns:repeat(2,1fr)}.request-head,.request-body{grid-template-columns:1fr}.request-head>div{border-right:0;border-bottom:1px solid #e4ebf3}.request-head>div:last-child{border-bottom:0}.toolbar input{width:100%}}
-                @media(max-width:560px){main{padding:14px}h1{font-size:25px}.stats{grid-template-columns:1fr}.stat{padding:14px}.toolbar{display:grid}.toolbar>*{width:100%}.request-body{padding:12px}.info-block{padding:14px}dl{grid-template-columns:1fr;gap:4px}.file-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+                @media(max-width:1040px){main{padding:18px}.stats{grid-template-columns:repeat(2,1fr)}.request-list-head{display:none}.request-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.request-row em{display:block}.row-action{justify-self:start}.request-body{grid-template-columns:1fr}.toolbar input{width:100%}}
+                @media(max-width:560px){main{padding:14px}h1{font-size:25px}.stats{grid-template-columns:1fr}.stat{padding:14px}.toolbar{display:grid}.toolbar>*{width:100%}.request-row{grid-template-columns:1fr;min-height:0;padding:14px}.request-body{padding:12px}.info-block{padding:14px}dl{grid-template-columns:1fr;gap:4px}.file-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
               </style>
             </head>
             <body>
@@ -476,6 +484,9 @@ after_initialize do
                   <button type="submit">筛选</button>
                 </form>
                 <section class="request-list">
+                  <div class="request-list-head">
+                    <span>编号</span><span>用户</span><span>套件</span><span>服务</span><span>联系</span><span>付款截图</span><span>状态</span><span></span>
+                  </div>
                   #{admin_request_rows}
                 </section>
               </main>
