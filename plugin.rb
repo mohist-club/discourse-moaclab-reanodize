@@ -3,7 +3,7 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.4
+# version: 0.1.5
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
@@ -106,9 +106,39 @@ after_initialize do
       index.filter_map { |id| find(id) }
     end
 
-    def self.safe_array(value)
-      Array.wrap(value).map { |item| item.to_s.strip }.reject(&:blank?).first(20)
-    end
+      def self.safe_array(value)
+        Array.wrap(value).map { |item| item.to_s.strip }.reject(&:blank?).first(20)
+      end
+
+      def self.notify_user_update(previous, updated, actor)
+        return if previous.blank? || updated.blank?
+
+        status_changed = previous["status"].to_s != updated["status"].to_s
+        note_changed = previous["admin_note"].to_s != updated["admin_note"].to_s
+        return unless status_changed || note_changed
+
+        user = User.find_by(id: updated["user_id"].to_i)
+        return if user.blank?
+
+        status_label = STATUS_LABELS[updated["status"]] || updated["status"]
+        note = updated["admin_note"].to_s.strip
+        raw = +"你的重新阳极需求有新的处理更新。\n\n"
+        raw << "- 需求编号：#{updated["public_id"]}\n"
+        raw << "- 套件名称：#{updated["kit_name"]}\n"
+        raw << "- 当前状态：#{status_label}\n"
+        raw << "- 处理人：@#{actor.username}\n"
+        raw << "- 内部备注：#{note}\n" if note.present?
+
+        PostCreator.create!(
+          Discourse.system_user,
+          title: "重新阳极需求更新：#{updated["public_id"]}",
+          raw: raw,
+          target_usernames: user.username,
+          archetype: Archetype.private_message,
+        )
+      rescue => error
+        Rails.logger.warn("#{PLUGIN_NAME}: failed to notify request #{updated["id"]}: #{error.class} #{error.message}")
+      end
 
     class RequestsController < ::ApplicationController
       requires_plugin "discourse-moaclab-reanodize"
@@ -175,6 +205,7 @@ after_initialize do
         attrs["admin_note"] = params[:admin_note].to_s if params.key?(:admin_note)
 
         updated = DiscourseMoaclabReanodize.update(params[:id], attrs)
+        DiscourseMoaclabReanodize.notify_user_update(record, updated, current_user)
 
         if request.format.html?
           redirect_to "/moaclab/reanodize/admin"
