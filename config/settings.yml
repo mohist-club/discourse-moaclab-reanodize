@@ -1,0 +1,8 @@
+plugins:
+  moaclab_reanodize_enabled:
+    default: true
+    client: true
+  moaclab_reanodize_manager_group_name:
+    default: "reanodize_managers"
+    client: false
+    type: string
