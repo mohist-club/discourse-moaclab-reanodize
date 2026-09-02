@@ -2,6 +2,8 @@
 
 Stores and manages Moaclab re-anodize service requests submitted by the `moaclab-reanodize-request` theme component.
 
+This safety-first version stores records in Discourse `PluginStore`, so installation does not run a custom database migration.
+
 ## Install
 
 Add the plugin to the Discourse container and rebuild:
@@ -54,3 +56,5 @@ The admin page supports:
 ## Notes
 
 The first backend version stores uploaded file names from the theme component. A later version can replace this with Discourse Upload records for case images and payment screenshots.
+
+For larger-scale operation, migrate the `PluginStore` records to a dedicated database table after the production install has been verified.

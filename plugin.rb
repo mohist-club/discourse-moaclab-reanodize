@@ -3,18 +3,20 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.0
+# version: 0.1.1
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
 
-require "json"
 require "securerandom"
 
 enabled_site_setting :moaclab_reanodize_enabled
 
 after_initialize do
   module ::DiscourseMoaclabReanodize
+    PLUGIN_NAME = "discourse-moaclab-reanodize"
+    INDEX_KEY = "requests:index"
+    NEXT_ID_KEY = "requests:next_id"
     STATUSES = %w[pending confirmed received processing completed cancelled].freeze
     SCOPES = %w[single topBottom].freeze
 
@@ -43,32 +45,68 @@ after_initialize do
     end
 
     def self.estimate_total(scope, needs_strip_polish)
-      base = scope == "topBottom" ? 300 : 200
-      base + (needs_strip_polish ? 50 : 0)
+      (scope == "topBottom" ? 300 : 200) + (needs_strip_polish ? 50 : 0)
     end
 
     def self.public_id
       "RA-#{Time.zone.now.strftime("%Y%m%d")}-#{SecureRandom.hex(3).upcase}"
     end
 
-    def self.notify_user(user, title, message, url)
-      Notification.create!(
-        notification_type: Notification.types[:custom],
-        user_id: user.id,
-        data: { title: title, message: message, url: url }.to_json,
-      )
-    rescue StandardError => e
-      Rails.logger.warn("[moaclab-reanodize] notification failed: #{e.class}: #{e.message}")
+    def self.index
+      Array.wrap(PluginStore.get(PLUGIN_NAME, INDEX_KEY))
     end
 
-    class Request < ::ActiveRecord::Base
-      self.table_name = "moaclab_reanodize_requests"
+    def self.write_index(ids)
+      PluginStore.set(PLUGIN_NAME, INDEX_KEY, ids.map(&:to_i).uniq)
+    end
 
-      belongs_to :user
+    def self.next_id
+      id = PluginStore.get(PLUGIN_NAME, NEXT_ID_KEY).to_i
+      id = 1 if id < 1
+      PluginStore.set(PLUGIN_NAME, NEXT_ID_KEY, id + 1)
+      id
+    end
 
-      validates :public_id, :kit_name, :anodize_scope, :status, presence: true
-      validates :anodize_scope, inclusion: { in: SCOPES }
-      validates :status, inclusion: { in: STATUSES }
+    def self.key(id)
+      "requests:#{id.to_i}"
+    end
+
+    def self.create(attrs)
+      id = next_id
+      now = Time.zone.now.iso8601
+      request = attrs.merge(
+        "id" => id,
+        "public_id" => public_id,
+        "status" => "pending",
+        "admin_note" => "",
+        "created_at" => now,
+        "updated_at" => now,
+      )
+
+      PluginStore.set(PLUGIN_NAME, key(id), request)
+      write_index([id] + index)
+      request
+    end
+
+    def self.find(id)
+      PluginStore.get(PLUGIN_NAME, key(id))
+    end
+
+    def self.update(id, attrs)
+      request = find(id)
+      return nil if request.blank?
+
+      updated = request.merge(attrs).merge("updated_at" => Time.zone.now.iso8601)
+      PluginStore.set(PLUGIN_NAME, key(id), updated)
+      updated
+    end
+
+    def self.all
+      index.filter_map { |id| find(id) }
+    end
+
+    def self.safe_array(value)
+      Array.wrap(value).map { |item| item.to_s.strip }.reject(&:blank?).first(20)
     end
 
     class RequestsController < ::ApplicationController
@@ -82,77 +120,60 @@ after_initialize do
         scope = permitted_scope(params[:anodize_scope])
         needs_strip_polish = ActiveModel::Type::Boolean.new.cast(params[:needs_strip_polish])
 
-        request = Request.create!(
-          public_id: DiscourseMoaclabReanodize.public_id,
-          user_id: current_user.id,
-          kit_name: required_string(:kit_name),
-          needs_strip_polish: needs_strip_polish,
-          anodize_scope: scope,
-          estimated_total: DiscourseMoaclabReanodize.estimate_total(scope, needs_strip_polish),
-          tracking_number: required_string(:tracking_number),
-          shipping_address: required_string(:shipping_address),
-          receiver_name: required_string(:receiver_name),
-          receiver_phone: required_string(:receiver_phone),
-          qq: params[:qq].to_s.strip,
-          color_code: required_string(:color_code),
-          case_files: safe_array(params[:case_files]),
-          payment_order_no: required_string(:payment_order_no),
-          payment_files: safe_array(params[:payment_files]),
-          status: "pending",
-        )
-
-        DiscourseMoaclabReanodize.notify_user(
-          current_user,
-          "重新阳极需求已提交",
-          "你的重新阳极需求 #{request.public_id} 已提交，维护组会进行确认。",
-          "/moaclab/reanodize/my",
-        )
+        request =
+          DiscourseMoaclabReanodize.create(
+            "user_id" => current_user.id,
+            "username" => current_user.username,
+            "kit_name" => required_string(:kit_name),
+            "needs_strip_polish" => needs_strip_polish,
+            "anodize_scope" => scope,
+            "estimated_total" => DiscourseMoaclabReanodize.estimate_total(scope, needs_strip_polish),
+            "tracking_number" => required_string(:tracking_number),
+            "shipping_address" => required_string(:shipping_address),
+            "receiver_name" => required_string(:receiver_name),
+            "receiver_phone" => required_string(:receiver_phone),
+            "qq" => params[:qq].to_s.strip,
+            "color_code" => required_string(:color_code),
+            "case_files" => DiscourseMoaclabReanodize.safe_array(params[:case_files]),
+            "payment_order_no" => required_string(:payment_order_no),
+            "payment_files" => DiscourseMoaclabReanodize.safe_array(params[:payment_files]),
+          )
 
         render json: serialize_request(request)
       end
 
       def mine
-        requests = Request.where(user_id: current_user.id).order(created_at: :desc).limit(50)
-        render json: { requests: requests.map { |request| serialize_request(request) } }
+        requests = DiscourseMoaclabReanodize.all.select { |request| request["user_id"].to_i == current_user.id }
+        render json: { requests: requests.first(50).map { |request| serialize_request(request) } }
       end
 
       def index
-        requests = Request.includes(:user).order(created_at: :desc)
-        requests = requests.where(status: params[:status]) if STATUSES.include?(params[:status].to_s)
+        requests = DiscourseMoaclabReanodize.all
+        requests = requests.select { |request| request["status"] == params[:status].to_s } if STATUSES.include?(params[:status].to_s)
 
         if params[:q].present?
-          q = "%#{params[:q].to_s.strip}%"
-          requests = requests.where(
-            "kit_name ILIKE :q OR public_id ILIKE :q OR qq ILIKE :q OR payment_order_no ILIKE :q",
-            q: q,
-          )
+          needle = params[:q].to_s.strip.downcase
+          requests =
+            requests.select do |request|
+              %w[public_id kit_name qq payment_order_no username].any? do |key|
+                request[key].to_s.downcase.include?(needle)
+              end
+            end
         end
 
-        render json: {
-          requests: requests.limit(200).map { |request| serialize_request(request, include_user: true) },
-          stats: stats_payload,
-        }
+        render json: { requests: requests.first(200).map { |request| serialize_request(request, include_user: true) }, stats: stats_payload }
       end
 
       def update
-        request = Request.find(params[:id])
-        previous_status = request.status
+        request = DiscourseMoaclabReanodize.find(params[:id])
+        raise Discourse::NotFound if request.blank?
 
+        attrs = {}
         status = params[:status].to_s
-        request.status = status if STATUSES.include?(status)
-        request.admin_note = params[:admin_note].to_s if params.key?(:admin_note)
-        request.save!
+        attrs["status"] = status if STATUSES.include?(status)
+        attrs["admin_note"] = params[:admin_note].to_s if params.key?(:admin_note)
 
-        if previous_status != request.status
-          DiscourseMoaclabReanodize.notify_user(
-            request.user,
-            "重新阳极需求状态更新",
-            "#{request.public_id} 的状态已更新为：#{STATUS_LABELS[request.status]}。",
-            "/moaclab/reanodize/my",
-          )
-        end
-
-        render json: serialize_request(request, include_user: true)
+        render json: serialize_request(DiscourseMoaclabReanodize.update(params[:id], attrs), include_user: true)
       end
 
       def stats
@@ -181,46 +202,45 @@ after_initialize do
         SCOPES.include?(scope) ? scope : "single"
       end
 
-      def safe_array(value)
-        Array.wrap(value).map { |item| item.to_s.strip }.reject(&:blank?).first(20)
-      end
-
       def serialize_request(request, include_user: false)
         payload = {
-          id: request.id,
-          public_id: request.public_id,
-          kit_name: request.kit_name,
-          needs_strip_polish: request.needs_strip_polish,
-          anodize_scope: request.anodize_scope,
-          anodize_scope_label: SCOPE_LABELS[request.anodize_scope],
-          estimated_total: request.estimated_total,
-          tracking_number: request.tracking_number,
-          shipping_address: request.shipping_address,
-          receiver_name: request.receiver_name,
-          receiver_phone: request.receiver_phone,
-          qq: request.qq,
-          color_code: request.color_code,
-          case_files: request.case_files || [],
-          payment_order_no: request.payment_order_no,
-          payment_files: request.payment_files || [],
-          status: request.status,
-          status_label: STATUS_LABELS[request.status],
-          admin_note: request.admin_note,
-          created_at: request.created_at,
-          updated_at: request.updated_at,
+          id: request["id"],
+          public_id: request["public_id"],
+          kit_name: request["kit_name"],
+          needs_strip_polish: request["needs_strip_polish"],
+          anodize_scope: request["anodize_scope"],
+          anodize_scope_label: SCOPE_LABELS[request["anodize_scope"]],
+          estimated_total: request["estimated_total"],
+          tracking_number: request["tracking_number"],
+          shipping_address: request["shipping_address"],
+          receiver_name: request["receiver_name"],
+          receiver_phone: request["receiver_phone"],
+          qq: request["qq"],
+          color_code: request["color_code"],
+          case_files: request["case_files"] || [],
+          payment_order_no: request["payment_order_no"],
+          payment_files: request["payment_files"] || [],
+          status: request["status"],
+          status_label: STATUS_LABELS[request["status"]],
+          admin_note: request["admin_note"],
+          created_at: request["created_at"],
+          updated_at: request["updated_at"],
         }
 
-        payload[:user] = { id: request.user_id, username: request.user&.username } if include_user
+        payload[:user] = { id: request["user_id"], username: request["username"] } if include_user
         payload
       end
 
       def stats_payload
+        requests = DiscourseMoaclabReanodize.all
+        by_status = requests.group_by { |request| request["status"] }.transform_values(&:size)
+
         {
-          total: Request.count,
-          pending: Request.where(status: "pending").count,
-          processing: Request.where(status: "processing").count,
-          completed: Request.where(status: "completed").count,
-          by_status: Request.group(:status).count,
+          total: requests.size,
+          pending: by_status["pending"].to_i,
+          processing: by_status["processing"].to_i,
+          completed: by_status["completed"].to_i,
+          by_status: by_status,
         }
       end
 
@@ -247,7 +267,7 @@ after_initialize do
                 th,td{padding:12px;border-bottom:1px solid #e4ebf3;text-align:left;vertical-align:top}
                 th{color:#6c87a8;font-size:13px}
                 .muted{color:#6c87a8}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-                .status{display:inline-flex;padding:3px 9px;border-radius:999px;background:#edf4ff;color:#386fae;font-weight:800;font-size:12px}
+                .status{display:inline-flex;margin-top:8px;padding:3px 9px;border-radius:999px;background:#edf4ff;color:#386fae;font-weight:800;font-size:12px}
                 textarea{width:220px;min-height:42px;padding:8px 10px;resize:vertical}
                 @media(max-width:760px){main{padding:16px}.stats{grid-template-columns:repeat(2,1fr)}header,.toolbar{display:grid}table,thead,tbody,tr,th,td{display:block}thead{display:none}tr{border-bottom:1px solid #dfe7f1}td{border-bottom:0}}
               </style>
@@ -278,7 +298,7 @@ after_initialize do
               </main>
               <script>
                 const statuses = #{STATUS_LABELS.to_json};
-                const csrf = "#{form_authenticity_token}";
+                const csrf = document.querySelector("meta[name='csrf-token']")?.content || "";
                 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;" }[c]));
                 async function load() {
                   const params = new URLSearchParams();
@@ -286,12 +306,7 @@ after_initialize do
                   if (status.value) params.set("status", status.value);
                   const res = await fetch(`/moaclab/reanodize/admin/requests?${params}`, { credentials: "same-origin" });
                   const data = await res.json();
-                  stats.innerHTML = [
-                    ["总数", data.stats.total],
-                    ["待确认", data.stats.pending],
-                    ["处理中", data.stats.processing],
-                    ["已完成", data.stats.completed],
-                  ].map(([label, value]) => `<div class="stat"><span>${label}</span><strong>${value}</strong></div>`).join("");
+                  stats.innerHTML = [["总数", data.stats.total],["待确认", data.stats.pending],["处理中", data.stats.processing],["已完成", data.stats.completed]].map(([label, value]) => `<div class="stat"><span>${label}</span><strong>${value}</strong></div>`).join("");
                   rows.innerHTML = data.requests.map(renderRow).join("");
                 }
                 function renderRow(item) {
