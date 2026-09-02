@@ -3,12 +3,13 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.1
+# version: 0.1.2
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
 
 require "securerandom"
+require "erb"
 
 enabled_site_setting :moaclab_reanodize_enabled
 
@@ -165,15 +166,21 @@ after_initialize do
       end
 
       def update
-        request = DiscourseMoaclabReanodize.find(params[:id])
-        raise Discourse::NotFound if request.blank?
+        record = DiscourseMoaclabReanodize.find(params[:id])
+        raise Discourse::NotFound if record.blank?
 
         attrs = {}
         status = params[:status].to_s
         attrs["status"] = status if STATUSES.include?(status)
         attrs["admin_note"] = params[:admin_note].to_s if params.key?(:admin_note)
 
-        render json: serialize_request(DiscourseMoaclabReanodize.update(params[:id], attrs), include_user: true)
+        updated = DiscourseMoaclabReanodize.update(params[:id], attrs)
+
+        if request.format.html?
+          redirect_to "/moaclab/reanodize/admin"
+        else
+          render json: serialize_request(updated, include_user: true)
+        end
       end
 
       def stats
@@ -244,6 +251,70 @@ after_initialize do
         }
       end
 
+      def admin_requests
+        requests = DiscourseMoaclabReanodize.all
+        requests = requests.select { |request| request["status"] == params[:status].to_s } if STATUSES.include?(params[:status].to_s)
+
+        if params[:q].present?
+          needle = params[:q].to_s.strip.downcase
+          requests =
+            requests.select do |request|
+              %w[public_id kit_name qq payment_order_no username].any? do |key|
+                request[key].to_s.downcase.include?(needle)
+              end
+            end
+        end
+
+        requests.first(200)
+      end
+
+      def h(value)
+        ERB::Util.html_escape(value.to_s)
+      end
+
+      def admin_status_options(selected)
+        STATUSES.map do |status|
+          selected_attr = status == selected ? " selected" : ""
+          %(<option value="#{h(status)}"#{selected_attr}>#{h(STATUS_LABELS[status])}</option>)
+        end.join
+      end
+
+      def admin_request_rows
+        requests = admin_requests
+        return %(<tr><td class="empty" colspan="9">暂无提交记录</td></tr>) if requests.blank?
+
+        requests.map do |item|
+          created_at = Time.zone.parse(item["created_at"].to_s).strftime("%Y-%m-%d %H:%M") rescue item["created_at"]
+          payment_files = Array.wrap(item["payment_files"]).join(", ")
+          service = "#{SCOPE_LABELS[item["anodize_scope"]]}#{item["needs_strip_polish"] ? " / 退漆打磨" : ""}"
+
+          <<~ROW
+            <tr>
+              <td><strong class="mono">#{h(item["public_id"])}</strong><br><span class="muted">#{h(created_at)}</span></td>
+              <td>#{h(item["username"] || "-")}</td>
+              <td><strong>#{h(item["kit_name"])}</strong><br><span class="muted">#{h(item["color_code"])}</span></td>
+              <td>#{h(service)}<br><strong>#{h(item["estimated_total"])}</strong></td>
+              <td>#{h(item["receiver_name"])} #{h(item["receiver_phone"])}<br><span class="muted">#{h(item["tracking_number"])}</span><br>#{h(item["shipping_address"])}</td>
+              <td>#{h(item["payment_order_no"])}<br><span class="muted">#{h(payment_files)}</span></td>
+              <td>
+                <form method="post" action="/moaclab/reanodize/admin/requests/#{h(item["id"])}">
+                  <input type="hidden" name="authenticity_token" value="#{h(form_authenticity_token)}">
+                  <select name="status">#{admin_status_options(item["status"])}</select>
+              </td>
+              <td><textarea name="admin_note">#{h(item["admin_note"])}</textarea></td>
+              <td><button type="submit">保存</button><br><span class="status">#{h(STATUS_LABELS[item["status"]])}</span></form></td>
+            </tr>
+          ROW
+        end.join
+      end
+
+      def admin_stats_html
+        stats = stats_payload
+        [["总数", stats[:total]], ["待确认", stats[:pending]], ["处理中", stats[:processing]], ["已完成", stats[:completed]]].map do |label, value|
+          %(<div class="stat"><span>#{h(label)}</span><strong>#{h(value)}</strong></div>)
+        end.join
+      end
+
       def admin_html
         <<~HTML
           <!doctype html>
@@ -268,6 +339,7 @@ after_initialize do
                 th{color:#6c87a8;font-size:13px}
                 .muted{color:#6c87a8}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
                 .status{display:inline-flex;margin-top:8px;padding:3px 9px;border-radius:999px;background:#edf4ff;color:#386fae;font-weight:800;font-size:12px}
+                .empty{padding:28px;text-align:center;color:#6c87a8;font-weight:800}
                 textarea{width:220px;min-height:42px;padding:8px 10px;resize:vertical}
                 @media(max-width:760px){main{padding:16px}.stats{grid-template-columns:repeat(2,1fr)}header,.toolbar{display:grid}table,thead,tbody,tr,th,td{display:block}thead{display:none}tr{border-bottom:1px solid #dfe7f1}td{border-bottom:0}}
               </style>
@@ -280,63 +352,22 @@ after_initialize do
                     <div class="muted">维护提交记录、处理状态和内部备注。</div>
                   </div>
                 </header>
-                <section class="stats" id="stats"></section>
-                <section class="toolbar">
-                  <input id="q" placeholder="搜索编号、套件、QQ、订单号">
-                  <select id="status">
+                <section class="stats">#{admin_stats_html}</section>
+                <form class="toolbar" method="get" action="/moaclab/reanodize/admin">
+                  <input name="q" value="#{h(params[:q])}" placeholder="搜索编号、套件、QQ、订单号">
+                  <select name="status">
                     <option value="">全部状态</option>
-                    #{STATUSES.map { |status| %(<option value="#{status}">#{STATUS_LABELS[status]}</option>) }.join}
+                    #{STATUSES.map { |status| %(<option value="#{h(status)}"#{status == params[:status].to_s ? " selected" : ""}>#{h(STATUS_LABELS[status])}</option>) }.join}
                   </select>
-                  <button id="search">筛选</button>
-                </section>
+                  <button type="submit">筛选</button>
+                </form>
                 <section class="panel">
                   <table>
                     <thead><tr><th>编号</th><th>用户</th><th>套件</th><th>服务</th><th>联系/寄件</th><th>付款</th><th>状态</th><th>备注</th><th>操作</th></tr></thead>
-                    <tbody id="rows"></tbody>
+                    <tbody>#{admin_request_rows}</tbody>
                   </table>
                 </section>
               </main>
-              <script>
-                const statuses = #{STATUS_LABELS.to_json};
-                const csrf = document.querySelector("meta[name='csrf-token']")?.content || "";
-                const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;" }[c]));
-                async function load() {
-                  const params = new URLSearchParams();
-                  if (q.value.trim()) params.set("q", q.value.trim());
-                  if (status.value) params.set("status", status.value);
-                  const res = await fetch(`/moaclab/reanodize/admin/requests?${params}`, { credentials: "same-origin" });
-                  const data = await res.json();
-                  stats.innerHTML = [["总数", data.stats.total],["待确认", data.stats.pending],["处理中", data.stats.processing],["已完成", data.stats.completed]].map(([label, value]) => `<div class="stat"><span>${label}</span><strong>${value}</strong></div>`).join("");
-                  rows.innerHTML = data.requests.map(renderRow).join("");
-                }
-                function renderRow(item) {
-                  return `<tr data-id="${item.id}">
-                    <td><strong class="mono">${esc(item.public_id)}</strong><br><span class="muted">${new Date(item.created_at).toLocaleString()}</span></td>
-                    <td>${esc(item.user?.username || "-")}</td>
-                    <td><strong>${esc(item.kit_name)}</strong><br><span class="muted">${esc(item.color_code)}</span></td>
-                    <td>${esc(item.anodize_scope_label)}${item.needs_strip_polish ? " / 退漆打磨" : ""}<br><strong>${esc(item.estimated_total)}</strong></td>
-                    <td>${esc(item.receiver_name)} ${esc(item.receiver_phone)}<br><span class="muted">${esc(item.tracking_number)}</span><br>${esc(item.shipping_address)}</td>
-                    <td>${esc(item.payment_order_no)}<br><span class="muted">${esc((item.payment_files || []).join(", "))}</span></td>
-                    <td><select class="row-status">${Object.keys(statuses).map(s => `<option value="${s}" ${s === item.status ? "selected" : ""}>${statuses[s]}</option>`).join("")}</select></td>
-                    <td><textarea class="row-note">${esc(item.admin_note || "")}</textarea></td>
-                    <td><button class="save">保存</button><br><span class="status">${esc(item.status_label)}</span></td>
-                  </tr>`;
-                }
-                rows.addEventListener("click", async (event) => {
-                  if (!event.target.classList.contains("save")) return;
-                  const tr = event.target.closest("tr");
-                  const res = await fetch(`/moaclab/reanodize/admin/requests/${tr.dataset.id}`, {
-                    method: "PATCH",
-                    credentials: "same-origin",
-                    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-                    body: JSON.stringify({ status: tr.querySelector(".row-status").value, admin_note: tr.querySelector(".row-note").value })
-                  });
-                  if (res.ok) load();
-                });
-                search.addEventListener("click", load);
-                q.addEventListener("keydown", e => { if (e.key === "Enter") load(); });
-                load();
-              </script>
             </body>
           </html>
         HTML
@@ -349,6 +380,7 @@ after_initialize do
     get "/moaclab/reanodize/my" => "discourse_moaclab_reanodize/requests#mine", defaults: { format: :json }
     get "/moaclab/reanodize/admin" => "discourse_moaclab_reanodize/requests#admin", defaults: { format: :html }
     get "/moaclab/reanodize/admin/requests" => "discourse_moaclab_reanodize/requests#index", defaults: { format: :json }
+    post "/moaclab/reanodize/admin/requests/:id" => "discourse_moaclab_reanodize/requests#update", defaults: { format: :html }
     patch "/moaclab/reanodize/admin/requests/:id" => "discourse_moaclab_reanodize/requests#update", defaults: { format: :json }
     get "/moaclab/reanodize/admin/stats" => "discourse_moaclab_reanodize/requests#stats", defaults: { format: :json }
   end
