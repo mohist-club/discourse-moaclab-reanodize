@@ -3,7 +3,7 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.8
+# version: 0.1.9
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
@@ -489,6 +489,11 @@ after_initialize do
         end.join
       end
 
+      def admin_script_nonce_attr
+        nonce = content_security_policy_nonce rescue nil
+        nonce.present? ? %( nonce="#{h(nonce)}") : ""
+      end
+
       def admin_html
         <<~HTML
           <!doctype html>
@@ -593,7 +598,7 @@ after_initialize do
                   <figcaption></figcaption>
                 </figure>
               </div>
-              <script>
+              <script#{admin_script_nonce_attr}>
                 const lightbox = document.getElementById("image-lightbox");
                 const lightboxImage = lightbox.querySelector("img");
                 const lightboxCaption = lightbox.querySelector("figcaption");
