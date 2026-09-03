@@ -3,7 +3,7 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.2.0
+# version: 0.2.1
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
@@ -195,7 +195,7 @@ after_initialize do
 
       before_action :ensure_logged_in
       before_action :ensure_manager, only: %i[index update stats admin]
-      skip_before_action :check_xhr, only: %i[create mine index update stats admin]
+      skip_before_action :check_xhr, only: %i[create mine index update stats admin access]
 
       def create
         scope = permitted_scope(params[:anodize_scope])
@@ -227,6 +227,10 @@ after_initialize do
       def mine
         requests = DiscourseMoaclabReanodize.all.select { |request| request["user_id"].to_i == current_user.id }
         render json: { requests: requests.first(50).map { |request| serialize_request(request) } }
+      end
+
+      def access
+        render json: { can_manage: DiscourseMoaclabReanodize.manager?(current_user) }
       end
 
       def index
@@ -446,7 +450,7 @@ after_initialize do
 
           if url.present? && image_file?(url)
             label_html = compact ? "" : %(<span>#{h(label)}</span>)
-            %(<a class="file-thumb#{compact ? " is-compact" : ""}" href="#{h(url)}" target="_blank" rel="noopener" title="#{h(label)}" data-admin-image="#{h(url)}" data-admin-image-label="#{h(label)}"><img src="#{h(url)}" alt="#{h(label)}">#{label_html}</a>)
+            %(<a class="file-thumb#{compact ? " is-compact" : ""}" href="#" title="#{h(label)}" data-admin-image="#{h(url)}" data-admin-image-label="#{h(label)}"><img src="#{h(url)}" alt="#{h(label)}">#{label_html}</a>)
           elsif url.present?
             %(<a class="file-link" href="#{h(url)}" target="_blank" rel="noopener">#{h(label)}</a>)
           else
@@ -686,6 +690,7 @@ after_initialize do
   Discourse::Application.routes.append do
     post "/moaclab/reanodize/requests" => "discourse_moaclab_reanodize/requests#create", defaults: { format: :json }
     get "/moaclab/reanodize/my" => "discourse_moaclab_reanodize/requests#mine", defaults: { format: :json }
+    get "/moaclab/reanodize/access" => "discourse_moaclab_reanodize/requests#access", defaults: { format: :json }
     get "/moaclab/reanodize/admin" => "discourse_moaclab_reanodize/requests#admin", defaults: { format: :html }
     get "/moaclab/reanodize/admin/requests" => "discourse_moaclab_reanodize/requests#index", defaults: { format: :json }
     post "/moaclab/reanodize/admin/requests/:id" => "discourse_moaclab_reanodize/requests#update", defaults: { format: :html }
