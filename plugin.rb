@@ -3,13 +3,14 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.6
+# version: 0.1.7
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
 
 require "securerandom"
 require "erb"
+require "cgi"
 
 enabled_site_setting :moaclab_reanodize_enabled
 
@@ -18,7 +19,7 @@ after_initialize do
     PLUGIN_NAME = "discourse-moaclab-reanodize"
     INDEX_KEY = "requests:index"
     NEXT_ID_KEY = "requests:next_id"
-    STATUSES = %w[pending confirmed received processing completed cancelled].freeze
+    STATUSES = %w[pending confirmed completed cancelled].freeze
     SCOPES = %w[single topBottom].freeze
 
     STATUS_LABELS = {
@@ -187,7 +188,7 @@ after_initialize do
             "shipping_address" => required_string(:shipping_address),
             "receiver_name" => required_string(:receiver_name),
             "receiver_phone" => required_string(:receiver_phone),
-            "qq" => params[:qq].to_s.strip,
+            "qq" => required_string(:qq),
             "color_code" => required_string(:color_code),
             "case_files" => DiscourseMoaclabReanodize.safe_array(params[:case_files]),
             "payment_order_no" => required_string(:payment_order_no),
@@ -205,13 +206,14 @@ after_initialize do
 
       def index
         requests = DiscourseMoaclabReanodize.all
-        requests = requests.select { |request| request["status"] == params[:status].to_s } if STATUSES.include?(params[:status].to_s)
+        status = admin_status_param
+        requests = requests.select { |request| request["status"] == status } if status.present?
 
         if params[:q].present?
           needle = params[:q].to_s.strip.downcase
           requests =
             requests.select do |request|
-              %w[public_id kit_name qq payment_order_no username].any? do |key|
+              %w[public_id kit_name qq payment_order_no username receiver_name receiver_phone tracking_number].any? do |key|
                 request[key].to_s.downcase.include?(needle)
               end
             end
@@ -309,13 +311,14 @@ after_initialize do
 
       def admin_requests
         requests = DiscourseMoaclabReanodize.all
-        requests = requests.select { |request| request["status"] == params[:status].to_s } if STATUSES.include?(params[:status].to_s)
+        status = admin_status_param
+        requests = requests.select { |request| request["status"] == status } if status.present?
 
         if params[:q].present?
           needle = params[:q].to_s.strip.downcase
           requests =
             requests.select do |request|
-              %w[public_id kit_name qq payment_order_no username].any? do |key|
+              %w[public_id kit_name qq payment_order_no username receiver_name receiver_phone tracking_number].any? do |key|
                 request[key].to_s.downcase.include?(needle)
               end
             end
@@ -332,6 +335,30 @@ after_initialize do
         STATUSES.map do |status|
           selected_attr = status == selected ? " selected" : ""
           %(<option value="#{h(status)}"#{selected_attr}>#{h(STATUS_LABELS[status])}</option>)
+        end.join
+      end
+
+      def admin_status_param
+        status = params[:status].to_s
+        return status if STATUSES.include?(status)
+        return "" if status == "all"
+
+        "pending"
+      end
+
+      def admin_tab_html
+        active = admin_status_param
+        query = params[:q].to_s.strip
+        tabs = [["", "全部"], ["pending", "待确认"], ["confirmed", "已确认"], ["completed", "已完成"], ["cancelled", "已取消"]]
+
+        tabs.map do |value, label|
+          parts = []
+          parts << "status=#{h(value.present? ? value : "all")}"
+          parts << "q=#{h(CGI.escape(query))}" if query.present?
+          href = "/moaclab/reanodize/admin"
+          href = "#{href}?#{parts.join("&")}" if parts.present?
+          active_class = active == value ? " is-active" : ""
+          %(<a class="status-tab#{active_class}" href="#{href}">#{h(label)}</a>)
         end.join
       end
 
@@ -365,7 +392,7 @@ after_initialize do
 
           if url.present? && image_file?(url)
             label_html = compact ? "" : %(<span>#{h(label)}</span>)
-            %(<a class="file-thumb#{compact ? " is-compact" : ""}" href="#{h(url)}" target="_blank" rel="noopener" title="#{h(label)}"><img src="#{h(url)}" alt="#{h(label)}">#{label_html}</a>)
+            %(<a class="file-thumb#{compact ? " is-compact" : ""}" href="#{h(url)}" target="_blank" rel="noopener" title="#{h(label)}" data-admin-image="#{h(url)}" data-admin-image-label="#{h(label)}"><img src="#{h(url)}" alt="#{h(label)}">#{label_html}</a>)
           elsif url.present?
             %(<a class="file-link" href="#{h(url)}" target="_blank" rel="noopener">#{h(label)}</a>)
           else
@@ -396,10 +423,9 @@ after_initialize do
                 <span class="cell"><em>用户</em><strong>#{h(item["username"] || "-")}</strong></span>
                 <span class="cell"><em>套件</em><strong>#{h(item["kit_name"])}</strong><small>#{h(item["color_code"])}</small></span>
                 <span class="cell"><em>服务</em><strong>#{h(service)}</strong><small>#{h(item["estimated_total"])} 元</small></span>
-                <span class="cell"><em>联系</em><strong>#{h(item["receiver_name"])} / #{h(item["receiver_phone"])}</strong><small>QQ #{h(item["qq"])}</small></span>
+                <span class="cell"><em>QQ</em><strong>#{h(item["qq"])}</strong><small>#{h(item["receiver_name"])} / #{h(item["receiver_phone"])}</small></span>
                 <span class="cell file-cell"><em>付款截图</em><span class="row-files">#{row_files}</span></span>
-                <span class="cell"><em>状态</em><span class="status">#{h(STATUS_LABELS[item["status"]])}</span></span>
-                <span class="row-action">详情</span>
+                <span class="cell"><em>状态</em><span class="status">#{h(STATUS_LABELS[item["status"]] || item["status"])}</span></span>
               </summary>
               <form class="request-detail" method="post" action="/moaclab/reanodize/admin/requests/#{h(item["id"])}">
                 <input type="hidden" name="authenticity_token" value="#{h(form_authenticity_token)}">
@@ -440,7 +466,7 @@ after_initialize do
                     </label>
                     <div class="admin-actions">
                       <button type="submit">保存</button>
-                      <span class="status">#{h(STATUS_LABELS[item["status"]])}</span>
+                      <span class="status">#{h(STATUS_LABELS[item["status"]] || item["status"])}</span>
                     </div>
                   </section>
                 </div>
@@ -452,7 +478,7 @@ after_initialize do
 
       def admin_stats_html
         stats = stats_payload
-        [["总数", stats[:total]], ["待确认", stats[:pending]], ["处理中", stats[:processing]], ["已完成", stats[:completed]]].map do |label, value|
+        [["总数", stats[:total]], ["待确认", stats[:pending]], ["已确认", stats[:by_status]["confirmed"].to_i], ["已完成", stats[:completed]], ["已取消", stats[:by_status]["cancelled"].to_i]].map do |label, value|
           %(<div class="stat"><span>#{h(label)}</span><strong>#{h(value)}</strong></div>)
         end.join
       end
@@ -468,31 +494,34 @@ after_initialize do
               <style>
                 *{box-sizing:border-box}
                 body{margin:0;background:#f6f8fb;color:#17202a;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-                main{max-width:1180px;margin:0 auto;padding:28px}
+                main{max-width:1240px;margin:0 auto;padding:28px}
                 header{display:flex;justify-content:space-between;gap:16px;align-items:end;margin-bottom:18px}
                 h1{margin:0;font-size:30px;line-height:1.2;letter-spacing:0}
                 h2,h3{margin:0;line-height:1.25;letter-spacing:0}
-                .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}
+                .stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:16px}
                 .stat{background:#fff;border:1px solid #dfe7f1;border-radius:14px;box-shadow:0 14px 34px rgba(31,45,71,.06);padding:18px}
                 .stat span{display:block;color:#6c87a8;font-weight:750}.stat strong{font-size:30px;line-height:1.1}
+                .status-tabs{display:flex;gap:8px;margin:0 0 14px;overflow-x:auto}
+                .status-tab{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 16px;border:1px solid #cbd8e8;border-radius:999px;background:#fff;color:#6c87a8;text-decoration:none;font-weight:850;white-space:nowrap}
+                .status-tab.is-active{border-color:#386fae;background:#edf4ff;color:#386fae}
                 .toolbar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
                 input,select,textarea,button{border:1px solid #cbd8e8;border-radius:10px;background:#fff;color:#17202a;font:inherit}
                 input,select{height:42px;padding:0 12px}button{height:42px;padding:0 16px;font-weight:800;cursor:pointer}
                 .muted{color:#6c87a8}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
                 .request-list{display:grid;gap:10px}
-                .request-list-head,.request-row{display:grid;grid-template-columns:1.45fr .75fr 1fr 1fr 1.15fr .9fr .7fr 68px;gap:12px;align-items:center}
+                .request-list-head,.request-row{display:grid;grid-template-columns:1.45fr .72fr 1fr 1fr .95fr .86fr .62fr 42px;gap:12px;align-items:center}
                 .request-list-head{padding:0 18px 8px;color:#6c87a8;font-size:12px;font-weight:850}
                 .request-item{background:#fff;border:1px solid #dfe7f1;border-radius:14px;box-shadow:0 14px 34px rgba(31,45,71,.06);overflow:hidden}
                 .request-item[open]{box-shadow:0 18px 44px rgba(31,45,71,.1)}
                 .request-row{position:relative;min-height:84px;padding:14px 18px;list-style:none;cursor:pointer}
                 .request-row::-webkit-details-marker{display:none}
                 .request-row:hover{background:#fbfdff}
+                .request-row:after{content:"展开";justify-self:end;color:#386fae;font-size:12px;font-weight:850}
+                .request-item[open] .request-row:after{content:"收起"}
                 .request-row .cell{min-width:0;display:grid;gap:3px}
                 .request-row em{display:none;color:#6c87a8;font-size:12px;font-style:normal;font-weight:850}
                 .request-row strong{display:block;font-size:14px;line-height:1.35;overflow-wrap:anywhere}
                 .request-row small{display:block;color:#6c87a8;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
-                .row-action{justify-self:end;display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 12px;border:1px solid #cbd8e8;border-radius:999px;color:#386fae;font-size:13px;font-weight:850}
-                .request-item[open] .row-action{background:#edf4ff}
                 .row-files{display:flex;gap:6px;align-items:center;min-width:0}
                 .request-body{display:grid;grid-template-columns:1.05fr 1.05fr .9fr;gap:14px;padding:16px;border-top:1px solid #e4ebf3;background:#fbfdff}
                 .info-block{min-width:0;border:1px solid #e4ebf3;border-radius:14px;padding:16px;background:#fff}
@@ -505,6 +534,7 @@ after_initialize do
                 .file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:10px}
                 .file-thumb,.file-link,.file-name{display:flex;align-items:center;justify-content:center;min-height:42px;border:1px solid #dfe7f1;border-radius:12px;background:#f8fbff;color:#386fae;font-weight:800;text-decoration:none;overflow:hidden}
                 .file-thumb{display:grid;grid-template-rows:74px auto;padding:6px;gap:6px}
+                .file-thumb:hover{border-color:#386fae;box-shadow:0 8px 20px rgba(56,111,174,.14)}
                 .file-thumb img{width:100%;height:74px;object-fit:cover;border-radius:9px;background:#eef3f8}
                 .file-thumb.is-compact{width:46px;height:46px;min-height:0;padding:3px;grid-template-rows:1fr;border-radius:10px}
                 .file-thumb.is-compact img{height:38px;border-radius:7px}
@@ -518,7 +548,13 @@ after_initialize do
                 .admin-actions button{background:#17202a;color:#fff;border-color:#17202a}
                 .status{display:inline-flex;padding:5px 11px;border-radius:999px;background:#edf4ff;color:#386fae;font-weight:800;font-size:13px}
                 .empty{padding:32px;text-align:center;color:#6c87a8;font-weight:800;background:#fff;border:1px solid #dfe7f1;border-radius:14px}
-                @media(max-width:1040px){main{padding:18px}.stats{grid-template-columns:repeat(2,1fr)}.request-list-head{display:none}.request-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.request-row em{display:block}.row-action{justify-self:start}.request-body{grid-template-columns:1fr}.toolbar input{width:100%}}
+                .image-lightbox{position:fixed;inset:0;z-index:20;display:none;place-items:center;padding:24px;background:rgba(8,13,22,.78)}
+                .image-lightbox.is-open{display:grid}
+                .image-lightbox figure{position:relative;width:min(980px,calc(100vw - 48px));max-height:calc(100vh - 48px);margin:0;padding:16px;border-radius:18px;background:#fff;box-shadow:0 28px 70px rgba(0,0,0,.32)}
+                .image-lightbox img{display:block;width:100%;max-height:calc(100vh - 120px);object-fit:contain;border-radius:12px;background:#f6f8fb}
+                .image-lightbox figcaption{margin-top:10px;color:#6c87a8;font-weight:800;text-align:center;overflow-wrap:anywhere}
+                .image-lightbox button{position:absolute;top:10px;right:10px;width:38px;height:38px;padding:0;border-radius:999px;background:#fff;box-shadow:0 8px 18px rgba(0,0,0,.18);font-size:24px;line-height:1}
+                @media(max-width:1040px){main{padding:18px}.stats{grid-template-columns:repeat(2,1fr)}.request-list-head{display:none}.request-row{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.request-row em{display:block}.request-row:after{justify-self:start}.request-body{grid-template-columns:1fr}.toolbar input{width:100%}}
                 @media(max-width:560px){main{padding:14px}h1{font-size:25px}.stats{grid-template-columns:1fr}.stat{padding:14px}.toolbar{display:grid}.toolbar>*{width:100%}.request-row{grid-template-columns:1fr;min-height:0;padding:14px}.request-body{padding:12px}.info-block{padding:14px}dl{grid-template-columns:1fr;gap:4px}.file-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
               </style>
             </head>
@@ -531,21 +567,55 @@ after_initialize do
                   </div>
                 </header>
                 <section class="stats">#{admin_stats_html}</section>
+                <nav class="status-tabs" aria-label="状态筛选">#{admin_tab_html}</nav>
                 <form class="toolbar" method="get" action="/moaclab/reanodize/admin">
                   <input name="q" value="#{h(params[:q])}" placeholder="搜索编号、套件、QQ、订单号">
-                  <select name="status">
-                    <option value="">全部状态</option>
-                    #{STATUSES.map { |status| %(<option value="#{h(status)}"#{status == params[:status].to_s ? " selected" : ""}>#{h(STATUS_LABELS[status])}</option>) }.join}
-                  </select>
-                  <button type="submit">筛选</button>
+                  <input type="hidden" name="status" value="#{h(admin_status_param.present? ? admin_status_param : "all")}">
+                  <button type="submit">搜索</button>
                 </form>
                 <section class="request-list">
                   <div class="request-list-head">
-                    <span>编号</span><span>用户</span><span>套件</span><span>服务</span><span>联系</span><span>付款截图</span><span>状态</span><span></span>
+                    <span>编号</span><span>用户</span><span>套件</span><span>服务</span><span>QQ</span><span>付款截图</span><span>状态</span><span></span>
                   </div>
                   #{admin_request_rows}
                 </section>
               </main>
+              <div class="image-lightbox" id="image-lightbox" aria-hidden="true">
+                <figure>
+                  <button type="button" aria-label="关闭">×</button>
+                  <img src="" alt="">
+                  <figcaption></figcaption>
+                </figure>
+              </div>
+              <script>
+                const lightbox = document.getElementById("image-lightbox");
+                const lightboxImage = lightbox.querySelector("img");
+                const lightboxCaption = lightbox.querySelector("figcaption");
+                const closeLightbox = () => {
+                  lightbox.classList.remove("is-open");
+                  lightbox.setAttribute("aria-hidden", "true");
+                  lightboxImage.removeAttribute("src");
+                  lightboxImage.alt = "";
+                  lightboxCaption.textContent = "";
+                };
+                document.querySelectorAll("[data-admin-image]").forEach((link) => {
+                  link.addEventListener("click", (event) => {
+                    event.preventDefault();
+                    lightboxImage.src = link.dataset.adminImage;
+                    lightboxImage.alt = link.dataset.adminImageLabel || "上传图片";
+                    lightboxCaption.textContent = link.dataset.adminImageLabel || "";
+                    lightbox.classList.add("is-open");
+                    lightbox.setAttribute("aria-hidden", "false");
+                  });
+                });
+                lightbox.addEventListener("click", (event) => {
+                  if (event.target === lightbox) closeLightbox();
+                });
+                lightbox.querySelector("button").addEventListener("click", closeLightbox);
+                document.addEventListener("keydown", (event) => {
+                  if (event.key === "Escape" && lightbox.classList.contains("is-open")) closeLightbox();
+                });
+              </script>
             </body>
           </html>
         HTML
