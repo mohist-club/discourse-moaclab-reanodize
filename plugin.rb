@@ -3,7 +3,7 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.9
+# version: 0.2.0
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
@@ -111,6 +111,31 @@ after_initialize do
         Array.wrap(value).map { |item| item.to_s.strip }.reject(&:blank?).first(20)
       end
 
+      def self.safe_files(value)
+        Array
+          .wrap(value)
+          .filter_map do |item|
+            if item.respond_to?(:to_unsafe_h)
+              item = item.to_unsafe_h
+            elsif item.respond_to?(:to_h) && !item.is_a?(String)
+              item = item.to_h
+            end
+
+            if item.is_a?(Hash)
+              normalized = {}
+              %w[url short_url original_filename name id sha1].each do |key|
+                raw = item[key] || item[key.to_sym]
+                normalized[key] = raw.to_s.strip if raw.present?
+              end
+              normalized.present? ? normalized : nil
+            else
+              file = item.to_s.strip
+              file.present? ? file : nil
+            end
+          end
+          .first(20)
+      end
+
       def self.notify_user_update(previous, updated, actor)
         return if previous.blank? || updated.blank?
 
@@ -190,9 +215,9 @@ after_initialize do
             "receiver_phone" => required_string(:receiver_phone),
             "qq" => required_string(:qq),
             "color_code" => required_string(:color_code),
-            "case_files" => DiscourseMoaclabReanodize.safe_array(params[:case_files]),
+            "case_files" => DiscourseMoaclabReanodize.safe_files(params[:case_files]),
             "payment_order_no" => required_string(:payment_order_no),
-            "payment_files" => DiscourseMoaclabReanodize.safe_array(params[:payment_files]),
+            "payment_files" => DiscourseMoaclabReanodize.safe_files(params[:payment_files]),
           )
 
         DiscourseMoaclabReanodize.notify_user_created(request)
@@ -366,17 +391,38 @@ after_initialize do
         value.to_s.match?(/\.(avif|gif|jpe?g|png|webp)(\?.*)?\z/i)
       end
 
+      def file_hash(value)
+        return value.to_unsafe_h if value.respond_to?(:to_unsafe_h)
+        return value.to_h if value.respond_to?(:to_h) && !value.is_a?(String)
+
+        {}
+      end
+
+      def file_label(value)
+        attrs = file_hash(value)
+        label = attrs["original_filename"] || attrs[:original_filename] || attrs["name"] || attrs[:name]
+        label = value.to_s if label.blank?
+        File.basename(label.to_s)
+      end
+
       def upload_url(value)
-        raw = value.to_s.strip
+        attrs = file_hash(value)
+        raw = (attrs["url"] || attrs[:url] || attrs["short_url"] || attrs[:short_url] || value).to_s.strip
         return "" if raw.blank?
         return raw if raw.start_with?("http://", "https://", "/uploads/", "/optimized/")
+
+        upload_id = attrs["id"] || attrs[:id]
+        if upload_id.present?
+          upload = Upload.find_by(id: upload_id.to_i) rescue nil
+          return upload.url if upload&.url.present?
+        end
 
         if raw.start_with?("upload://")
           upload = Upload.get_from_url(raw) rescue nil
           return upload.url if upload&.url.present?
         end
 
-        basename = File.basename(raw)
+        basename = file_label(value)
         like_name = ActiveRecord::Base.sanitize_sql_like(basename)
         sha_prefix = basename.sub(/\.[^.]+\z/, "")
         upload = Upload.where(original_filename: raw).order(id: :desc).first rescue nil
@@ -389,12 +435,14 @@ after_initialize do
       end
 
       def file_items_html(files, empty_label, compact: false)
-        items = Array.wrap(files).map { |file| file.to_s.strip }.reject(&:blank?)
+        items = Array.wrap(files).reject do |file|
+          file.blank? || (file.respond_to?(:empty?) && file.empty?)
+        end
         return %(<span class="muted">#{h(empty_label)}</span>) if items.blank?
 
         items.map do |file|
           url = upload_url(file)
-          label = File.basename(file)
+          label = file_label(file)
 
           if url.present? && image_file?(url)
             label_html = compact ? "" : %(<span>#{h(label)}</span>)
