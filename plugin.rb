@@ -3,7 +3,7 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.7
+# version: 0.1.8
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
@@ -376,7 +376,13 @@ after_initialize do
           return upload.url if upload&.url.present?
         end
 
+        basename = File.basename(raw)
+        like_name = ActiveRecord::Base.sanitize_sql_like(basename)
+        sha_prefix = basename.sub(/\.[^.]+\z/, "")
         upload = Upload.where(original_filename: raw).order(id: :desc).first rescue nil
+        upload ||= Upload.where(original_filename: basename).order(id: :desc).first rescue nil
+        upload ||= Upload.where("url LIKE ?", "%#{like_name}").order(id: :desc).first rescue nil
+        upload ||= Upload.where("sha1 LIKE ?", "#{sha_prefix}%").order(id: :desc).first rescue nil
         return upload.url if upload&.url.present?
 
         ""
@@ -423,7 +429,7 @@ after_initialize do
                 <span class="cell"><em>用户</em><strong>#{h(item["username"] || "-")}</strong></span>
                 <span class="cell"><em>套件</em><strong>#{h(item["kit_name"])}</strong><small>#{h(item["color_code"])}</small></span>
                 <span class="cell"><em>服务</em><strong>#{h(service)}</strong><small>#{h(item["estimated_total"])} 元</small></span>
-                <span class="cell"><em>QQ</em><strong>#{h(item["qq"])}</strong><small>#{h(item["receiver_name"])} / #{h(item["receiver_phone"])}</small></span>
+                <span class="cell"><em>QQ</em><strong>#{h(item["qq"])}</strong></span>
                 <span class="cell file-cell"><em>付款截图</em><span class="row-files">#{row_files}</span></span>
                 <span class="cell"><em>状态</em><span class="status">#{h(STATUS_LABELS[item["status"]] || item["status"])}</span></span>
               </summary>
@@ -601,6 +607,7 @@ after_initialize do
                 document.querySelectorAll("[data-admin-image]").forEach((link) => {
                   link.addEventListener("click", (event) => {
                     event.preventDefault();
+                    event.stopPropagation();
                     lightboxImage.src = link.dataset.adminImage;
                     lightboxImage.alt = link.dataset.adminImageLabel || "上传图片";
                     lightboxCaption.textContent = link.dataset.adminImageLabel || "";
