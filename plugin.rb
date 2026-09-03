@@ -3,7 +3,7 @@
 # name: discourse-moaclab-reanodize
 # about: Stores and manages Moaclab re-anodize service requests.
 # meta_topic_id: 0
-# version: 0.1.5
+# version: 0.1.6
 # authors: Moaclab, Codex
 # url: https://moaclab.com
 # required_version: 3.3.0
@@ -140,6 +140,30 @@ after_initialize do
         Rails.logger.warn("#{PLUGIN_NAME}: failed to notify request #{updated["id"]}: #{error.class} #{error.message}")
       end
 
+      def self.notify_user_created(request)
+        return if request.blank?
+
+        user = User.find_by(id: request["user_id"].to_i)
+        return if user.blank?
+
+        raw = +"你的重新阳极需求已提交成功。\n\n"
+        raw << "- 需求编号：#{request["public_id"]}\n"
+        raw << "- 套件名称：#{request["kit_name"]}\n"
+        raw << "- 当前状态：#{STATUS_LABELS[request["status"]] || request["status"]}\n"
+        raw << "- 预估费用：#{request["estimated_total"]} 元\n\n"
+        raw << "后续处理进度会继续通过系统消息通知你。"
+
+        PostCreator.create!(
+          Discourse.system_user,
+          title: "重新阳极需求已提交：#{request["public_id"]}",
+          raw: raw,
+          target_usernames: user.username,
+          archetype: Archetype.private_message,
+        )
+      rescue => error
+        Rails.logger.warn("#{PLUGIN_NAME}: failed to notify created request #{request["id"]}: #{error.class} #{error.message}")
+      end
+
     class RequestsController < ::ApplicationController
       requires_plugin "discourse-moaclab-reanodize"
 
@@ -170,6 +194,7 @@ after_initialize do
             "payment_files" => DiscourseMoaclabReanodize.safe_array(params[:payment_files]),
           )
 
+        DiscourseMoaclabReanodize.notify_user_created(request)
         render json: serialize_request(request)
       end
 
